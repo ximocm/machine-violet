@@ -1,10 +1,11 @@
 /** Stable, collection-independent campaign memory tools. */
 import { Type } from "@sinclair/typebox";
-import type { KnowledgeOperation } from "@machine-violet/shared/types/knowledge.js";
+import type { KnowledgeOperation, KnowledgeRepair } from "@machine-violet/shared/types/knowledge.js";
 import type { CampaignKnowledgeStore } from "../knowledge/store.js";
 import { defineToolContract, validateToolInput, type ToolInputPolicy } from "../agents/tool-contract.js";
 import type { ToolResult } from "../agents/tool-registry.js";
 import type { EntityStore } from "./store.js";
+import { normalizeSheetBody } from "../knowledge/sheet-body.js";
 
 const Value = Type.Recursive((Self) => Type.Union([
   Type.Null(), Type.Boolean(), Type.Number(), Type.String(), Type.Array(Self), Type.Record(Type.String(), Self),
@@ -62,6 +63,52 @@ export const ENTITY_TOOL_NAME_SET: ReadonlySet<string> = new Set(ENTITY_TOOLS.ma
 export const ENTITY_INPUT_POLICIES: Readonly<Record<string, ToolInputPolicy>> = Object.fromEntries(ENTITY_CONTRACTS.map((contract) => [contract.definition.name, contract.policy as ToolInputPolicy]));
 export interface EntityToolHandlerOptions { sceneNumber?: number | (() => number); source?: string; expectedRevision?: () => number; assertCurrent?: () => void; protectedRoots?: string[]; protectedFields?: Record<string, string[]> }
 
+type SheetWriteResult = { ok: true; operations: KnowledgeOperation[]; repairs: KnowledgeRepair[] } | { ok: false; message: string };
+
+/**
+ * Sheet-heading contract (issue #761): model-authored character sheet bodies
+ * use canonical `##` headings, enforced at this tool boundary instead of
+ * remembered from prompt directives. Unambiguous variants are rewritten and
+ * reported as repairs; invented headings and body-level `## Changelog`
+ * sections are rejected before any mutation. Engine-side materialization
+ * (setup, seeds, sheet specialists) mutates the store directly and keeps its
+ * own curated section formats. Unresolvable handles skip classification here;
+ * the mutation raises the canonical error.
+ */
+async function normalizeCharacterSheetWrites(store: CampaignKnowledgeStore, operations: KnowledgeOperation[]): Promise<SheetWriteResult> {
+  const outline = await store.outline();
+  const byUid = new Map(outline.map((entry) => [entry.uid, entry]));
+  const repairs: KnowledgeRepair[] = [];
+  let prepared = operations;
+  for (const [index, operation] of operations.entries()) {
+    const op = operation as unknown as Record<string, unknown>;
+    const field = op.op === "append_text" ? "text" : op.op === "upsert" || op.op === "patch" ? "body" : null;
+    if (!field || typeof op[field] !== "string") continue;
+    const existing = op.uid ? await store.resolve(String(op.uid)) : op.name ? await store.resolve(String(op.name)) : null;
+    // A creating upsert lands on a new entity under its target collection.
+    const target = existing ?? (op.op === "upsert" ? await store.resolve(String(op.collection ?? "")) : null);
+    const row = target ? byUid.get(target) : undefined;
+    if (!row) continue;
+    if (op.op === "append_text" && row.kind === "value") continue; // string leaf, not a body
+    if (row.kind !== "entity" && !(op.op === "upsert" && row.kind === "collection")) continue;
+    let top: (typeof outline)[number] = row;
+    while (top.parent && top.parent !== "root") {
+      const parent = byUid.get(top.parent);
+      if (!parent) break;
+      top = parent;
+    }
+    if (top.name !== "Characters") continue;
+    const result = normalizeSheetBody(String(op[field]));
+    if (!result.ok) return { ok: false, message: result.message };
+    if (result.repairs.length) {
+      repairs.push(...result.repairs);
+      if (prepared === operations) prepared = operations.slice();
+      prepared[index] = { ...operation, [field]: result.body } as KnowledgeOperation;
+    }
+  }
+  return { ok: true, operations: prepared, repairs };
+}
+
 export function buildKnowledgeToolHandler(store: CampaignKnowledgeStore, options: EntityToolHandlerOptions = {}) {
   return async (name: string, input: Record<string, unknown>): Promise<ToolResult | null> => {
     const contract = ENTITY_CONTRACTS.find((candidate) => candidate.definition.name === name);
@@ -71,7 +118,10 @@ export function buildKnowledgeToolHandler(store: CampaignKnowledgeStore, options
     try {
       if (name === "remember") {
         const sceneNumber = typeof options.sceneNumber === "function" ? options.sceneNumber() : options.sceneNumber;
-        return { content: JSON.stringify(await store.mutate(input.operations as KnowledgeOperation[], { expectedRevision: options.expectedRevision?.(), assertCurrent: options.assertCurrent, protectedRoots: options.protectedRoots, protectedFields: options.protectedFields, sceneNumber, source: options.source ?? "agent", operationId: input.operationId as string | undefined })) };
+        const sheetWrites = await normalizeCharacterSheetWrites(store, input.operations as KnowledgeOperation[]);
+        if (!sheetWrites.ok) return { content: sheetWrites.message, is_error: true };
+        const committed = await store.mutate(sheetWrites.operations, { expectedRevision: options.expectedRevision?.(), assertCurrent: options.assertCurrent, protectedRoots: options.protectedRoots, protectedFields: options.protectedFields, sceneNumber, source: options.source ?? "agent", operationId: input.operationId as string | undefined });
+        return { content: JSON.stringify({ ...committed, ...(sheetWrites.repairs.length ? { repairs: sheetWrites.repairs } : {}) }) };
       }
       if (input.action === "outline") return { content: JSON.stringify(await store.outline()) };
       if (input.action === "read") return { content: JSON.stringify(await store.read(input.handle as string, {

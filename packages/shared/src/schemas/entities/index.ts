@@ -124,7 +124,7 @@ export const CHARACTER_SCHEMA: EntitySchema = {
   conventions: [
     ...SHARED_CONVENTIONS,
     "PCs and named NPCs both live here. The `type` field carries the role — \"PC\", \"NPC\", or \"character\" — and is editable via the `entity` tool. It's documentary: the functional PC roster is config.json's players[]; use swap_pc to actually hand off control. The store still blocks relabeling a sheet as a different entity category.",
-    "Promoted character sheets follow `promote_character`'s sheet format under `## Stats`/`## Abilities`.",
+    "Promoted character sheets follow `promote_character`'s sheet format. Body sections use only these canonical `##` headings: Relationships, Stats, Skills, Inventory, Conditions, Notes. Model-authored body writes are canonicalized at the `remember` tool boundary: `## Abilities` and `## Equipment` rewrite to `## Stats`/`## Inventory`, casing variants are normalized, invented headings are rejected with a diagnostic, and `## Changelog` is write-protected — changelog entries only via history/append_log.",
   ],
 };
 

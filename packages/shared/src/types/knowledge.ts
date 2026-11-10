@@ -126,6 +126,12 @@ export type KnowledgeOperation = {
   target: string;
   label?: string;
 };
+/** Deterministic, intent-preserving body canonicalization applied at commit. */
+export interface KnowledgeRepair {
+  code: "sheet_heading_canonicalized";
+  from: string;
+  to: string;
+}
 export interface KnowledgeMutationResult {
   /** Revision committed atomically with this result, including replay receipts. */
   revision?: number;
@@ -137,6 +143,8 @@ export interface KnowledgeMutationResult {
   changed: string[];
   candidates: string[];
   noticeId?: number;
+  /** Applied canonicalizations; absent when nothing was rewritten. */
+  repairs?: KnowledgeRepair[];
 }
 export interface KnowledgeReadOptions {
   textOffset?: number;

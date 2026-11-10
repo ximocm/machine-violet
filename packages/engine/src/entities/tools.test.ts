@@ -37,6 +37,65 @@ describe("generic campaign memory contracts", () => {
     expect(JSON.parse(retry!.content).identities).toEqual(expect.arrayContaining([expect.objectContaining({ name: "Bob", uid: expect.any(String) })]));
   });
 
+  it("rejects invented sheet headings with an actionable diagnostic, then accepts the corrected retry", async () => {
+    const { store, handler } = setup();
+    const bad = await handler("remember", { operations: [{ op: "upsert", collection: "Characters", name: "Aldric", body: "## Combat\n- swordsmanship" }] });
+    expect(bad?.is_error).toBe(true);
+    expect(bad?.content).toContain('"## Combat" is not one of them');
+    expect(bad?.content).toContain("Relationships, Stats, Skills, Inventory, Conditions, Notes");
+    expect(await store.resolve("Aldric")).toBeNull();
+    const retry = await handler("remember", { operations: [{ op: "upsert", collection: "Characters", name: "Aldric", body: "## Skills\n- swordsmanship" }] });
+    expect(retry?.is_error).toBeUndefined();
+    expect((await store.read("Aldric")).body).toBe("## Skills\n- swordsmanship");
+    const repaired = await handler("remember", { operations: [{ op: "patch", uid: "Aldric", body: "## Abilities\nSTR: 18" }] });
+    expect(repaired?.is_error).toBeUndefined();
+    expect(JSON.parse(repaired!.content).repairs).toEqual([{ code: "sheet_heading_canonicalized", from: "## Abilities", to: "## Stats" }]);
+    expect((await store.read("Aldric")).body).toBe("## Stats\nSTR: 18");
+  });
+
+  it("rejects a batch containing an invented heading before applying any operation", async () => {
+    const { store, handler } = setup();
+    await handler("remember", { operations: [{ op: "upsert", collection: "Characters", name: "Aldric", body: "## Notes\n- travels light" }] });
+    const bad = await handler("remember", { operations: [
+      { op: "patch", uid: "Aldric", body: "## Skills\n- swordsmanship" },
+      { op: "patch", uid: "Aldric", body: "## Combat\n- swordsmanship" },
+    ] });
+    expect(bad?.is_error).toBe(true);
+    expect((await store.read("Aldric")).body).toBe("## Notes\n- travels light");
+  });
+
+  it("keeps ## Changelog write-protected while history stays the entry path", async () => {
+    const { store, handler } = setup();
+    await handler("remember", { operations: [{ op: "upsert", collection: "Characters", name: "Aldric", body: "## Notes\n- quiet", history: "**Scene 001**: Created." }] });
+    const bad = await handler("remember", { operations: [{ op: "patch", uid: "Aldric", body: "## Changelog\n- **Scene 002**: Wrote himself in." }] });
+    expect(bad?.is_error).toBe(true);
+    expect(bad?.content).toContain("write-protected");
+    expect(bad?.content).toContain("history/append_log");
+    expect((await store.read("Aldric")).body).toBe("## Notes\n- quiet");
+    expect((await store.read("Aldric")).logs).toHaveLength(1);
+  });
+
+  it("canonicalizes append_text fragments but leaves string leaves and other collections alone", async () => {
+    const { store, handler } = setup();
+    await handler("remember", { operations: [{ op: "upsert", collection: "Characters", name: "Aldric", fields: { motto: "## Equipment" } }, { op: "upsert", collection: "Lore", name: "Tome", body: "## Combat\n- annotated" }] });
+    const repaired = await handler("remember", { operations: [{ op: "append_text", uid: "Aldric", text: "\n## Equipment\n- Wrench" }] });
+    expect(JSON.parse(repaired!.content).repairs).toEqual([{ code: "sheet_heading_canonicalized", from: "## Equipment", to: "## Inventory" }]);
+    expect((await store.read("Aldric")).body).toBe("\n## Inventory\n- Wrench");
+    const motto = (await store.read("Aldric")).children!.find((child) => child.name === "motto")!;
+    await handler("remember", { operations: [{ op: "append_text", uid: motto.uid, text: " forever" }] });
+    expect((await store.read(motto.uid)).value).toBe("## Equipment forever");
+    expect((await store.read("Tome")).body).toBe("## Combat\n- annotated");
+  });
+
+  it("lets engine-side store writes keep curated free-form sections", async () => {
+    const { store, handler } = setup();
+    // Setup materialization, seeds, and sheet specialists bypass the tool
+    // contract by design and own their section formats.
+    await store.mutate([{ op: "upsert", collection: "Characters", name: "Ada", body: "## Mechanics\nSTR: 10\n\n## What she's hiding (DM only)\n- the ledger" }]);
+    expect((await store.read("Ada")).body).toContain("## What she's hiding (DM only)");
+    expect(await handler("knowledge", { action: "read", handle: "Ada" })).not.toBeNull();
+  });
+
   it("resolves aliases and same-name updates without a clarification result", async () => {
     const { store, handler } = setup();
     await handler("remember", { operations: [{ op: "upsert", collection: "Characters", name: "Tall Hat", aliases: ["Bob"], fields: { mood: "happy", hp: 8 } }] });

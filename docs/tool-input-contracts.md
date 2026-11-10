@@ -150,4 +150,17 @@ Reference labels are arbitrary text. A `value:` prefix alone does not make an ex
 
 Read contracts expose explicit text, child, log-entry, and log-text offsets/limits. Results carry continuation information rather than expanding huge prose or logs into model context. Public materialization authenticates marker ancestry inside the exact approved field subtree and recognizes only exact internal shapes. The public projection never substitutes a private body or dependency label for an approved summary.
 
+Character sheet bodies (entity bodies under the `Characters` root collection)
+enforce canonical `##` section headings at the `remember` tool boundary —
+every model-facing writer crosses `buildKnowledgeToolHandler` (DM, scribe,
+co-DM maintenance, dev-mode entity tools). Unambiguous heading variants
+(`## Abilities`, `## Equipment`, casing and singulars) are rewritten to the
+canonical Relationships, Stats, Skills, Inventory, Conditions, Notes set and
+reported as `sheet_heading_canonicalized` repairs in the mutation result.
+Invented headings and body-level `## Changelog` sections are rejected before
+any write with an actionable diagnostic: changelog entries only flow through
+the `history`/`append_log` path. Other collections keep their unrestricted
+vocabulary, and engine-side materialization (setup, seeds, sheet specialists)
+mutates the store directly with its own curated section formats.
+
 Scripted-provider tests exercise the actual scribe loop and tool dispatch, not just the advertised tool list. Regression tests cover retries before effects, atomic rollback, bounded long text/logs, empty nested collection organization, alias/reference resolution, frozen 120-turn scene snapshots and resume, outbox delivery after failed turns, and failed-persistence notice retention.
